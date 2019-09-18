@@ -5,11 +5,7 @@ EXTENDS Naturals, Sequences, TLC
 \* Lock = [ Granted |-> RequestList, Pending |-> RequestList ]
 \* RequestList = <<ThreadNames>>
 
-\*CONSTANTS DB1, DB2
-
-(* --algorithm transfer
-\*variables alice_account = 10, bob_account = 10, money \in 1..20,
-\*          account_total = alice_account + bob_account;
+(* --algorithm locking
 variables locks = [ DB1 |-> {}, DB2 |-> {} ];
 
 macro lock(resource)
@@ -46,10 +42,10 @@ end algorithm *)
 
 
 \* BEGIN TRANSLATION
-\* Label LOCK1 of process ThreadA at line 17 col 5 changed to LOCK1_
-\* Label LOCK2 of process ThreadA at line 17 col 5 changed to LOCK2_
-\* Label UNLOCK1 of process ThreadA at line 24 col 5 changed to UNLOCK1_
-\* Label UNLOCK2 of process ThreadA at line 24 col 5 changed to UNLOCK2_
+\* Label LOCK1 of process ThreadA at line 13 col 5 changed to LOCK1_
+\* Label LOCK2 of process ThreadA at line 13 col 5 changed to LOCK2_
+\* Label UNLOCK1 of process ThreadA at line 20 col 5 changed to UNLOCK1_
+\* Label UNLOCK2 of process ThreadA at line 20 col 5 changed to UNLOCK2_
 VARIABLES locks, pc
 
 vars == << locks, pc >>
@@ -73,13 +69,13 @@ LOCK2_(self) == /\ pc[self] = "LOCK2_"
 
 UNLOCK1_(self) == /\ pc[self] = "UNLOCK1_"
                   /\ Assert(self \in locks["DB1"], 
-                            "Failure of assertion at line 24, column 5 of macro called at line 33, column 10.")
+                            "Failure of assertion at line 20, column 5 of macro called at line 29, column 10.")
                   /\ locks' = [locks EXCEPT !["DB1"] = {}]
                   /\ pc' = [pc EXCEPT ![self] = "UNLOCK2_"]
 
 UNLOCK2_(self) == /\ pc[self] = "UNLOCK2_"
                   /\ Assert(self \in locks["DB2"], 
-                            "Failure of assertion at line 24, column 5 of macro called at line 34, column 10.")
+                            "Failure of assertion at line 20, column 5 of macro called at line 30, column 10.")
                   /\ locks' = [locks EXCEPT !["DB2"] = {}]
                   /\ pc' = [pc EXCEPT ![self] = "Done"]
 
@@ -98,13 +94,13 @@ LOCK1(self) == /\ pc[self] = "LOCK1"
 
 UNLOCK1(self) == /\ pc[self] = "UNLOCK1"
                  /\ Assert(self \in locks["DB1"], 
-                           "Failure of assertion at line 24, column 5 of macro called at line 41, column 10.")
+                           "Failure of assertion at line 20, column 5 of macro called at line 37, column 10.")
                  /\ locks' = [locks EXCEPT !["DB1"] = {}]
                  /\ pc' = [pc EXCEPT ![self] = "UNLOCK2"]
 
 UNLOCK2(self) == /\ pc[self] = "UNLOCK2"
                  /\ Assert(self \in locks["DB2"], 
-                           "Failure of assertion at line 24, column 5 of macro called at line 42, column 10.")
+                           "Failure of assertion at line 20, column 5 of macro called at line 38, column 10.")
                  /\ locks' = [locks EXCEPT !["DB2"] = {}]
                  /\ pc' = [pc EXCEPT ![self] = "Done"]
 
@@ -128,5 +124,5 @@ Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Sep 18 01:55:20 EDT 2019 by syzhou
+\* Last modified Wed Sep 18 02:04:01 EDT 2019 by syzhou
 \* Created Tue Sep 17 18:48:11 EDT 2019 by syzhou
