@@ -31,14 +31,22 @@ CompatibilityMatrix == {
 <<MODE_S, MODE_S>>
 }
 
-AllResources == { "DB1", "DB2" }
+AllResources == { "DB1", "DB2", "GLOBAL" }
+
+Range(T) == { T[x] : x \in DOMAIN T }
 
 (* --algorithm locking
-variables locks = [ r \in AllResources |-> [granted |-> {}, pending |-> {}]];
+variables locks = [ r \in AllResources |-> [granted |-> {}, pending |-> {}]], unreplicated_oplog = <<>>;
 
+macro append_to_oplog(op) begin
+    unreplicated_oplog := Append(unreplicated_oplog, [thread |-> self, op |-> op]);
+end macro;
 
-macro unlock(resource)
-begin
+macro wait_for_write_concern(op) begin
+    await \A entry \in Range(unreplicated_oplog): entry /= [thread |-> self, op |-> op];
+end macro;
+
+macro unlock(resource) begin
     assert \E request \in locks[resource].granted: request.thread = self;
     locks[resource].granted := { r \in locks[resource].granted: r.thread /= self };
 end macro;
@@ -47,205 +55,218 @@ end macro;
 procedure lock(resource, mode) begin
 try_lock:
     locks[resource].pending := locks[resource].pending \union {[thread |-> self, mode |-> mode]};
-lock_wait:
+lock_granted:
     await \/ locks[resource].granted = {}
           \/ /\ \A request \in locks[resource].granted:
                   <<request.mode, mode>> \in CompatibilityMatrix
              /\ \A request \in locks[resource].pending:
                   request.mode /= MODE_X;
-lock_granted:
+
     \* self should have been defined in the scope.
-    locks[resource] := [ pending |-> { r \in locks[resource].pending: r.thread /= self },
-                         granted |-> locks[resource].granted \union {[thread |-> self, mode |-> mode]} ];
+    locks[resource].pending := { r \in locks[resource].pending: r.thread /= self } ||
+    locks[resource].granted := locks[resource].granted \union {[thread |-> self, mode |-> mode]};
     return;
 end procedure;
 
-process ThreadA \in {"ThreadA"}
+process ThreadTxn \in {"ThreadTxn"}
 begin
-A_LOCK1:   call lock("DB1", MODE_IX);
-A_LOCK2:   call lock("DB2", MODE_X);
-A_UNLOCK1: unlock("DB1");
-A_UNLOCK2: unlock("DB2");
+\* Start transaction.
+TXN_LOCK1:   call lock("GLOBAL", MODE_IX);
+
+\* Prepare transaction.
+TXN_WRITE:   append_to_oplog("prepare-write");
+TXN_WC:      wait_for_write_concern("prepare-write");
+
+\* Commit transaction.
+TXN_UNLOCK1: unlock("GLOBAL");
 end process
 
-process ThreadB \in {"ThreadB"}
+process ThreadDropDB \in {"ThreadDropDB"}
 begin
-B_LOCK2:   call lock("DB2", MODE_X);
-B_LOCK1:   call lock("DB1", MODE_IX);
-B_UNLOCK1: unlock("DB1");
-B_UNLOCK2: unlock("DB2");
+DROP_DB_LOCK1:   call lock("GLOBAL", MODE_X);
+DROP_DB_UNLOCK1: unlock("GLOBAL");
 end process
 
-\* Since IX requests wait for pending X to acquire first, this essentially makes
-\* the two IX requests conflict.
-process ThreadC \in {"ThreadC"}
+process DataReplication \in {"DataReplication"}
 begin
-C_LOCK1:   call lock("DB1", MODE_X);
-C_UNLOCK1: unlock("DB1");
+DATA_REPL_START:
+while TRUE do
+    if unreplicated_oplog /= <<>> then
+REPL_LOCK:    call lock("GLOBAL", MODE_IS);
+              \* Removing elements from the unreplicated_oplog means they have been replicated.
+REPL:         unreplicated_oplog := Tail(unreplicated_oplog);
+REPL_UNLOCK:  unlock("GLOBAL");
+    end if
+end while
 end process
-
 
 end algorithm *)
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 \* BEGIN TRANSLATION
 CONSTANT defaultInitValue
-VARIABLES locks, pc, stack, resource, mode
+VARIABLES locks, unreplicated_oplog, pc, stack, resource, mode
 
-vars == << locks, pc, stack, resource, mode >>
+vars == << locks, unreplicated_oplog, pc, stack, resource, mode >>
 
-ProcSet == ({"ThreadA"}) \cup ({"ThreadB"}) \cup ({"ThreadC"})
+ProcSet == ({"ThreadTxn"}) \cup ({"ThreadDropDB"}) \cup ({"DataReplication"})
 
 Init == (* Global variables *)
         /\ locks = [ r \in AllResources |-> [granted |-> {}, pending |-> {}]]
+        /\ unreplicated_oplog = <<>>
         (* Procedure lock *)
         /\ resource = [ self \in ProcSet |-> defaultInitValue]
         /\ mode = [ self \in ProcSet |-> defaultInitValue]
         /\ stack = [self \in ProcSet |-> << >>]
-        /\ pc = [self \in ProcSet |-> CASE self \in {"ThreadA"} -> "A_LOCK1"
-                                        [] self \in {"ThreadB"} -> "B_LOCK2"
-                                        [] self \in {"ThreadC"} -> "C_LOCK1"]
+        /\ pc = [self \in ProcSet |-> CASE self \in {"ThreadTxn"} -> "TXN_LOCK1"
+                                        [] self \in {"ThreadDropDB"} -> "DROP_DB_LOCK1"
+                                        [] self \in {"DataReplication"} -> "DATA_REPL_START"]
 
 try_lock(self) == /\ pc[self] = "try_lock"
                   /\ locks' = [locks EXCEPT ![resource[self]].pending = locks[resource[self]].pending \union {[thread |-> self, mode |-> mode[self]]}]
-                  /\ pc' = [pc EXCEPT ![self] = "lock_wait"]
-                  /\ UNCHANGED << stack, resource, mode >>
-
-lock_wait(self) == /\ pc[self] = "lock_wait"
-                   /\ \/ locks[resource[self]].granted = {}
-                      \/ /\ \A request \in locks[resource[self]].granted:
-                              <<request.mode, mode[self]>> \in CompatibilityMatrix
-                         /\ \A request \in locks[resource[self]].pending:
-                              request.mode /= MODE_X
-                   /\ pc' = [pc EXCEPT ![self] = "lock_granted"]
-                   /\ UNCHANGED << locks, stack, resource, mode >>
+                  /\ pc' = [pc EXCEPT ![self] = "lock_granted"]
+                  /\ UNCHANGED << unreplicated_oplog, stack, resource, mode >>
 
 lock_granted(self) == /\ pc[self] = "lock_granted"
-                      /\ locks' = [locks EXCEPT ![resource[self]] = [ pending |-> { r \in locks[resource[self]].pending: r.thread /= self },
-                                                                      granted |-> locks[resource[self]].granted \union {[thread |-> self, mode |-> mode[self]]} ]]
+                      /\ \/ locks[resource[self]].granted = {}
+                         \/ /\ \A request \in locks[resource[self]].granted:
+                                 <<request.mode, mode[self]>> \in CompatibilityMatrix
+                            /\ \A request \in locks[resource[self]].pending:
+                                 request.mode /= MODE_X
+                      /\ locks' = [locks EXCEPT ![resource[self]].pending = { r \in locks[resource[self]].pending: r.thread /= self },
+                                                ![resource[self]].granted = locks[resource[self]].granted \union {[thread |-> self, mode |-> mode[self]]}]
                       /\ pc' = [pc EXCEPT ![self] = Head(stack[self]).pc]
                       /\ resource' = [resource EXCEPT ![self] = Head(stack[self]).resource]
                       /\ mode' = [mode EXCEPT ![self] = Head(stack[self]).mode]
                       /\ stack' = [stack EXCEPT ![self] = Tail(stack[self])]
+                      /\ UNCHANGED unreplicated_oplog
 
-lock(self) == try_lock(self) \/ lock_wait(self) \/ lock_granted(self)
+lock(self) == try_lock(self) \/ lock_granted(self)
 
-A_LOCK1(self) == /\ pc[self] = "A_LOCK1"
-                 /\ /\ mode' = [mode EXCEPT ![self] = MODE_IX]
-                    /\ resource' = [resource EXCEPT ![self] = "DB1"]
-                    /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "lock",
-                                                             pc        |->  "A_LOCK2",
-                                                             resource  |->  resource[self],
-                                                             mode      |->  mode[self] ] >>
-                                                         \o stack[self]]
-                 /\ pc' = [pc EXCEPT ![self] = "try_lock"]
-                 /\ locks' = locks
+TXN_LOCK1(self) == /\ pc[self] = "TXN_LOCK1"
+                   /\ /\ mode' = [mode EXCEPT ![self] = MODE_IX]
+                      /\ resource' = [resource EXCEPT ![self] = "GLOBAL"]
+                      /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "lock",
+                                                               pc        |->  "TXN_WRITE",
+                                                               resource  |->  resource[self],
+                                                               mode      |->  mode[self] ] >>
+                                                           \o stack[self]]
+                   /\ pc' = [pc EXCEPT ![self] = "try_lock"]
+                   /\ UNCHANGED << locks, unreplicated_oplog >>
 
-A_LOCK2(self) == /\ pc[self] = "A_LOCK2"
-                 /\ /\ mode' = [mode EXCEPT ![self] = MODE_X]
-                    /\ resource' = [resource EXCEPT ![self] = "DB2"]
-                    /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "lock",
-                                                             pc        |->  "A_UNLOCK1",
-                                                             resource  |->  resource[self],
-                                                             mode      |->  mode[self] ] >>
-                                                         \o stack[self]]
-                 /\ pc' = [pc EXCEPT ![self] = "try_lock"]
-                 /\ locks' = locks
+TXN_WRITE(self) == /\ pc[self] = "TXN_WRITE"
+                   /\ unreplicated_oplog' = Append(unreplicated_oplog, [thread |-> self, op |-> "prepare-write"])
+                   /\ pc' = [pc EXCEPT ![self] = "TXN_WC"]
+                   /\ UNCHANGED << locks, stack, resource, mode >>
 
-A_UNLOCK1(self) == /\ pc[self] = "A_UNLOCK1"
-                   /\ Assert(\E request \in locks["DB1"].granted: request.thread = self,
-                             "Failure of assertion at line 42, column 5 of macro called at line 67, column 12.")
-                   /\ locks' = [locks EXCEPT !["DB1"].granted = { r \in locks["DB1"].granted: r.thread /= self }]
-                   /\ pc' = [pc EXCEPT ![self] = "A_UNLOCK2"]
-                   /\ UNCHANGED << stack, resource, mode >>
+TXN_WC(self) == /\ pc[self] = "TXN_WC"
+                /\ \A entry \in Range(unreplicated_oplog): entry /= [thread |-> self, op |-> "prepare-write"]
+                /\ pc' = [pc EXCEPT ![self] = "TXN_UNLOCK1"]
+                /\ UNCHANGED << locks, unreplicated_oplog, stack, resource,
+                                mode >>
 
-A_UNLOCK2(self) == /\ pc[self] = "A_UNLOCK2"
-                   /\ Assert(\E request \in locks["DB2"].granted: request.thread = self,
-                             "Failure of assertion at line 42, column 5 of macro called at line 68, column 12.")
-                   /\ locks' = [locks EXCEPT !["DB2"].granted = { r \in locks["DB2"].granted: r.thread /= self }]
-                   /\ pc' = [pc EXCEPT ![self] = "Done"]
-                   /\ UNCHANGED << stack, resource, mode >>
+TXN_UNLOCK1(self) == /\ pc[self] = "TXN_UNLOCK1"
+                     /\ Assert(\E request \in locks["GLOBAL"].granted: request.thread = self,
+                               "Failure of assertion at line 50, column 5 of macro called at line 81, column 14.")
+                     /\ locks' = [locks EXCEPT !["GLOBAL"].granted = { r \in locks["GLOBAL"].granted: r.thread /= self }]
+                     /\ pc' = [pc EXCEPT ![self] = "Done"]
+                     /\ UNCHANGED << unreplicated_oplog, stack, resource, mode >>
 
-ThreadA(self) == A_LOCK1(self) \/ A_LOCK2(self) \/ A_UNLOCK1(self)
-                    \/ A_UNLOCK2(self)
+ThreadTxn(self) == TXN_LOCK1(self) \/ TXN_WRITE(self) \/ TXN_WC(self)
+                      \/ TXN_UNLOCK1(self)
 
-B_LOCK2(self) == /\ pc[self] = "B_LOCK2"
-                 /\ /\ mode' = [mode EXCEPT ![self] = MODE_X]
-                    /\ resource' = [resource EXCEPT ![self] = "DB2"]
-                    /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "lock",
-                                                             pc        |->  "B_LOCK1",
-                                                             resource  |->  resource[self],
-                                                             mode      |->  mode[self] ] >>
-                                                         \o stack[self]]
-                 /\ pc' = [pc EXCEPT ![self] = "try_lock"]
-                 /\ locks' = locks
+DROP_DB_LOCK1(self) == /\ pc[self] = "DROP_DB_LOCK1"
+                       /\ /\ mode' = [mode EXCEPT ![self] = MODE_X]
+                          /\ resource' = [resource EXCEPT ![self] = "GLOBAL"]
+                          /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "lock",
+                                                                   pc        |->  "DROP_DB_UNLOCK1",
+                                                                   resource  |->  resource[self],
+                                                                   mode      |->  mode[self] ] >>
+                                                               \o stack[self]]
+                       /\ pc' = [pc EXCEPT ![self] = "try_lock"]
+                       /\ UNCHANGED << locks, unreplicated_oplog >>
 
-B_LOCK1(self) == /\ pc[self] = "B_LOCK1"
-                 /\ /\ mode' = [mode EXCEPT ![self] = MODE_IX]
-                    /\ resource' = [resource EXCEPT ![self] = "DB1"]
-                    /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "lock",
-                                                             pc        |->  "B_UNLOCK1",
-                                                             resource  |->  resource[self],
-                                                             mode      |->  mode[self] ] >>
-                                                         \o stack[self]]
-                 /\ pc' = [pc EXCEPT ![self] = "try_lock"]
-                 /\ locks' = locks
+DROP_DB_UNLOCK1(self) == /\ pc[self] = "DROP_DB_UNLOCK1"
+                         /\ Assert(\E request \in locks["GLOBAL"].granted: request.thread = self,
+                                   "Failure of assertion at line 50, column 5 of macro called at line 87, column 18.")
+                         /\ locks' = [locks EXCEPT !["GLOBAL"].granted = { r \in locks["GLOBAL"].granted: r.thread /= self }]
+                         /\ pc' = [pc EXCEPT ![self] = "Done"]
+                         /\ UNCHANGED << unreplicated_oplog, stack, resource,
+                                         mode >>
 
-B_UNLOCK1(self) == /\ pc[self] = "B_UNLOCK1"
-                   /\ Assert(\E request \in locks["DB1"].granted: request.thread = self,
-                             "Failure of assertion at line 42, column 5 of macro called at line 75, column 12.")
-                   /\ locks' = [locks EXCEPT !["DB1"].granted = { r \in locks["DB1"].granted: r.thread /= self }]
-                   /\ pc' = [pc EXCEPT ![self] = "B_UNLOCK2"]
-                   /\ UNCHANGED << stack, resource, mode >>
+ThreadDropDB(self) == DROP_DB_LOCK1(self) \/ DROP_DB_UNLOCK1(self)
 
-B_UNLOCK2(self) == /\ pc[self] = "B_UNLOCK2"
-                   /\ Assert(\E request \in locks["DB2"].granted: request.thread = self,
-                             "Failure of assertion at line 42, column 5 of macro called at line 76, column 12.")
-                   /\ locks' = [locks EXCEPT !["DB2"].granted = { r \in locks["DB2"].granted: r.thread /= self }]
-                   /\ pc' = [pc EXCEPT ![self] = "Done"]
-                   /\ UNCHANGED << stack, resource, mode >>
+DATA_REPL_START(self) == /\ pc[self] = "DATA_REPL_START"
+                         /\ IF unreplicated_oplog /= <<>>
+                               THEN /\ pc' = [pc EXCEPT ![self] = "REPL_LOCK"]
+                               ELSE /\ pc' = [pc EXCEPT ![self] = "DATA_REPL_START"]
+                         /\ UNCHANGED << locks, unreplicated_oplog, stack,
+                                         resource, mode >>
 
-ThreadB(self) == B_LOCK2(self) \/ B_LOCK1(self) \/ B_UNLOCK1(self)
-                    \/ B_UNLOCK2(self)
+REPL_LOCK(self) == /\ pc[self] = "REPL_LOCK"
+                   /\ /\ mode' = [mode EXCEPT ![self] = MODE_IS]
+                      /\ resource' = [resource EXCEPT ![self] = "GLOBAL"]
+                      /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "lock",
+                                                               pc        |->  "REPL",
+                                                               resource  |->  resource[self],
+                                                               mode      |->  mode[self] ] >>
+                                                           \o stack[self]]
+                   /\ pc' = [pc EXCEPT ![self] = "try_lock"]
+                   /\ UNCHANGED << locks, unreplicated_oplog >>
 
-C_LOCK1(self) == /\ pc[self] = "C_LOCK1"
-                 /\ /\ mode' = [mode EXCEPT ![self] = MODE_X]
-                    /\ resource' = [resource EXCEPT ![self] = "DB1"]
-                    /\ stack' = [stack EXCEPT ![self] = << [ procedure |->  "lock",
-                                                             pc        |->  "C_UNLOCK1",
-                                                             resource  |->  resource[self],
-                                                             mode      |->  mode[self] ] >>
-                                                         \o stack[self]]
-                 /\ pc' = [pc EXCEPT ![self] = "try_lock"]
-                 /\ locks' = locks
+REPL(self) == /\ pc[self] = "REPL"
+              /\ unreplicated_oplog' = Tail(unreplicated_oplog)
+              /\ pc' = [pc EXCEPT ![self] = "REPL_UNLOCK"]
+              /\ UNCHANGED << locks, stack, resource, mode >>
 
-C_UNLOCK1(self) == /\ pc[self] = "C_UNLOCK1"
-                   /\ Assert(\E request \in locks["DB1"].granted: request.thread = self,
-                             "Failure of assertion at line 42, column 5 of macro called at line 84, column 12.")
-                   /\ locks' = [locks EXCEPT !["DB1"].granted = { r \in locks["DB1"].granted: r.thread /= self }]
-                   /\ pc' = [pc EXCEPT ![self] = "Done"]
-                   /\ UNCHANGED << stack, resource, mode >>
+REPL_UNLOCK(self) == /\ pc[self] = "REPL_UNLOCK"
+                     /\ Assert(\E request \in locks["GLOBAL"].granted: request.thread = self,
+                               "Failure of assertion at line 50, column 5 of macro called at line 98, column 15.")
+                     /\ locks' = [locks EXCEPT !["GLOBAL"].granted = { r \in locks["GLOBAL"].granted: r.thread /= self }]
+                     /\ pc' = [pc EXCEPT ![self] = "DATA_REPL_START"]
+                     /\ UNCHANGED << unreplicated_oplog, stack, resource, mode >>
 
-ThreadC(self) == C_LOCK1(self) \/ C_UNLOCK1(self)
-
-(* Allow infinite stuttering to prevent deadlock on termination. *)
-Terminating == /\ \A self \in ProcSet: pc[self] = "Done"
-               /\ UNCHANGED vars
+DataReplication(self) == DATA_REPL_START(self) \/ REPL_LOCK(self)
+                            \/ REPL(self) \/ REPL_UNLOCK(self)
 
 Next == (\E self \in ProcSet: lock(self))
-           \/ (\E self \in {"ThreadA"}: ThreadA(self))
-           \/ (\E self \in {"ThreadB"}: ThreadB(self))
-           \/ (\E self \in {"ThreadC"}: ThreadC(self))
-           \/ Terminating
+           \/ (\E self \in {"ThreadTxn"}: ThreadTxn(self))
+           \/ (\E self \in {"ThreadDropDB"}: ThreadDropDB(self))
+           \/ (\E self \in {"DataReplication"}: DataReplication(self))
 
 Spec == Init /\ [][Next]_vars
-
-Termination == <>(\A self \in ProcSet: pc[self] = "Done")
 
 \* END TRANSLATION
 
 
 =============================================================================
 \* Modification History
-\* Last modified Wed Sep 18 22:34:38 EDT 2019 by syzhou
+\* Last modified Wed Sep 18 23:41:52 EDT 2019 by syzhou
 \* Created Tue Sep 17 18:48:11 EDT 2019 by syzhou
