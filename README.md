@@ -2,8 +2,8 @@
 
 ## Summary
 This project is to explore model checking for the locking behaviors of MongoDB. The spec `locking.tla` successfully reproduced the deadlock in [SERVER-43242](https://jira.mongodb.org/browse/SERVER-43242). The PlusCal spec includes
-- Lock compatibility matrix
-- MODE_X has a high priority than other modes.
+- Lock compatibility matrix.
+- MODE_X has a higher priority than other modes.
 - Oplog replication and waiting for write concern.
 - PrepareTxn command waits for write concern while holding the global IX lock.
 - DropDatabase command can be blocked by the prepare, asking for the global X lock.
@@ -21,6 +21,6 @@ Locking behaviors became significantly more complex in 4.2 after transactions we
 - Model interruptibility so that stepdown and shutdown can be included.
 
 ## Takeaways
-- PlusCal is an easier way to model threads and sequences of actions than TLA+ since TLA+ is about the global state. Using TLA+ to model threads will inevitably specify the intermidiate states explicitly, just as in the transpiled TLA+ version of PlusCal.
+- PlusCal is an easier way to model threads and sequences of actions than TLA+ since TLA+ is about the global state. Using TLA+ to model threads will inevitably specify the intermediate states explicitly, just as in the transpiled TLA+ version of PlusCal.
 - TLA+ and PlusCal are essentially two languages. The syntaxes and labeling rules can be confusing, especially when the error messages of transpile failures do not point to the root cause.
 - Specifying nontrival behaviors (e.g. writing for write concern) is straightforward once the right level of abstraction is determined.

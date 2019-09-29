@@ -4,6 +4,7 @@ EXTENDS Naturals, Sequences, TLC
 \* Locks = [ Resource |-> Lock ]
 \* Lock = [ Granted |-> RequestList, Pending |-> RequestList ]
 \* RequestList = [ thread |-> ThreadNames, mode |-> mode ]
+\* UnreplicatedOplog = << [ thread |-> ThreadName, op -> OperationName ], ... >>
 
 \* This matrix answers the question, "Is a lock request with mode 'Requested Mode' compatible with
 \* an existing lock held in mode 'Granted Mode'?"
@@ -268,5 +269,6 @@ Spec == Init /\ [][Next]_vars
 
 =============================================================================
 \* Modification History
+\* Last modified Sat Sep 28 09:51:08 EDT 2019 by emptysquare
 \* Last modified Wed Sep 18 23:41:52 EDT 2019 by syzhou
 \* Created Tue Sep 17 18:48:11 EDT 2019 by syzhou
